@@ -14,14 +14,18 @@
     "@remix-run/node": "^2.11.0",
     "@remix-run/react": "^2.11.0",
     "@remix-run/serve": "^2.11.0",
+    "@types/wicg-file-system-access": "^2023.10.5",
     "isbot": "^4.1.0",
+    "localforage": "^1.10.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "treeify": "^1.1.0"
   },
   "devDependencies": {
     "@remix-run/dev": "^2.11.0",
     "@types/react": "^18.2.20",
     "@types/react-dom": "^18.2.7",
+    "@types/treeify": "^1.0.3",
     "@typescript-eslint/eslint-plugin": "^6.7.4",
     "@typescript-eslint/parser": "^6.7.4",
     "autoprefixer": "^10.4.19",

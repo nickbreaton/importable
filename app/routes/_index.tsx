@@ -1,7 +1,6 @@
-import { SerializeFrom } from "@remix-run/node";
-import { useLoaderData, useRevalidator } from "@remix-run/react";
+import { Await, useLoaderData, useRevalidator } from "@remix-run/react";
 import localForage from "localforage";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import treeify, { TreeObject } from "treeify";
 import { GitHubButton } from "~/components/GitHubButton";
 import reduce from "image-blob-reduce";
@@ -14,14 +13,30 @@ const CRAWL_DISALLOW = [
   /^\./, // starts with dot
 ];
 
-type Images = FileSystemFileHandle[];
+const imageContainerCache = new WeakMap<FileSystemFileHandle, ImageContainer>();
+
+class ImageContainer {
+  constructor(public fullPath: string, public handle: FileSystemFileHandle) {}
+
+  #thumbnail?: Promise<Blob>;
+
+  async getThumbnail() {
+    this.#thumbnail ??= this.handle.getFile().then((file) => {
+      console.log("get thumbnail", this.fullPath);
+      return reduce()
+        .toBlob(file, { max: 300 })
+        .catch(() => file);
+    });
+    return await this.#thumbnail;
+  }
+}
 
 async function crawlDirectoryHandle(
   directoryHandle: FileSystemDirectoryHandle,
   precedingPaths: string[] = []
-): Promise<[TreeObject, Images]> {
+): Promise<[TreeObject, ImageContainer[]]> {
   const tree: TreeObject = {};
-  const images: Images = [];
+  const images: ImageContainer[] = [];
 
   for await (const unstableHandle of directoryHandle.values()) {
     if (CRAWL_DISALLOW.some((disallowed) => unstableHandle.name.match(disallowed))) {
@@ -35,7 +50,9 @@ async function crawlDirectoryHandle(
 
     if (handle.kind === "file") {
       tree[handle.name] = "";
-      images.push(handle);
+      const container = imageContainerCache.get(handle) ?? new ImageContainer(fullPathKey, handle);
+      imageContainerCache.set(handle, container);
+      images.push(container);
     } else {
       const [childTree, childImages] = await crawlDirectoryHandle(handle, fullPath);
       tree[`${handle.name}/`] = childTree;
@@ -57,7 +74,7 @@ async function isLikelyUnmounted(directoryHandle: FileSystemDirectoryHandle) {
 
 type Selected<T extends { selected: boolean }> = T extends { selected: true } ? T : never;
 
-function assertSelected<T extends SerializeFrom<typeof clientLoader>>(data: T): asserts data is Selected<T> {
+function assertSelected<T extends Awaited<ReturnType<typeof clientLoader>>>(data: T): asserts data is Selected<T> {
   if (!data.selected) {
     throw new Error("Expected data to be of selected variant");
   }
@@ -81,12 +98,15 @@ export async function clientLoader() {
 
   const [tree, images] = await crawlDirectoryHandle(directoryHandle);
 
+  const firstThumbnailsPreload = Promise.all(images.slice(0, 20).map((container) => container.getThumbnail()));
+
   return {
     selected: true as const,
     directoryName: directoryHandle.name,
     handle: directoryHandle,
     tree: treeify.asTree(tree, false, true),
     images: images,
+    firstThumbnailsPreload,
   };
 }
 
@@ -106,26 +126,21 @@ const Pannel = ({ children }: { children: React.ReactNode }) => (
   <div className="rounded-md p-2 border-slate-200 border-solid border min-h-72">{children}</div>
 );
 
-const ImageThumbnail = ({ file }: { file: FileSystemFileHandle }) => {
+const ImageThumbnail = ({ container }: { container: ImageContainer }) => {
   const [src, setSrc] = useState<string>();
 
   useEffect(() => {
-    if (file) {
-      let url: string | null = null;
+    let url: string | null = null;
 
-      file.getFile().then(async (blob) => {
-        const reducedBlob = await reduce().toBlob(blob, { max: 300 });
-        url = URL.createObjectURL(reducedBlob);
-        setSrc(url);
-      });
+    container.getThumbnail().then((thumbnail) => {
+      url = URL.createObjectURL(thumbnail);
+      setSrc(url);
+    });
 
-      return () => {
-        if (url) {
-          URL.revokeObjectURL(url);
-        }
-      };
-    }
-  }, [file]);
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [container]);
 
   return (
     <div className="aspect-square w-full rounded overflow-hidden pointer-events-none select-none">
@@ -157,9 +172,10 @@ export default function Index() {
     const destination = await DCIM.getDirectoryHandle("100MEDIA", { create: true });
 
     for (let index = 0; index < data.images.length; index++) {
-      const image = data.images.at(index);
-      const ext = extname(image!);
-      await image!.move(destination, `IMG_${String(index).padStart(4, "0")}${ext}`); // TODO: 1 pad index properly, carry over extension
+      const container = data.images.at(index);
+      const image = container!.handle;
+      const ext = extname(image);
+      await image.move(destination, `IMG_${String(index).padStart(4, "0")}${ext}`); // TODO: 1 pad index properly, carry over extension
     }
 
     revalidator.revalidate();
@@ -175,7 +191,7 @@ export default function Index() {
         {data.selected && (
           <div>
             <h1>{data.directoryName}</h1>
-            <pre>{data.tree}</pre>
+            {/* <pre>{data.tree}</pre> */}
             <button
               className="py-2 px-4 bg-sky-50 border-sky-500 text-sky-500 border-2 rounded"
               onClick={organizeFiles}
@@ -188,11 +204,15 @@ export default function Index() {
       {data.selected && (
         <div className="grid gap-2 md:grid-cols-2">
           <Pannel>
-            <div className="grid grid-cols-5 gap-2">
-              {data.images.map((image) => (
-                <ImageThumbnail file={image} key={image.name} />
-              ))}
-            </div>
+            <Suspense>
+              <Await resolve={data.firstThumbnailsPreload}>
+                <div className="grid grid-cols-5 gap-2">
+                  {data.images.map((image) => (
+                    <ImageThumbnail container={image} key={image.fullPath} />
+                  ))}
+                </div>
+              </Await>
+            </Suspense>
           </Pannel>
           <Pannel>x</Pannel>
         </div>

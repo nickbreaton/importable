@@ -1,9 +1,10 @@
 import { SerializeFrom } from "@remix-run/node";
 import { useLoaderData, useRevalidator } from "@remix-run/react";
 import localForage from "localforage";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import treeify, { TreeObject } from "treeify";
 import { GitHubButton } from "~/components/GitHubButton";
+import reduce from "image-blob-reduce";
 
 const STORAGE_KEY = "directory_handle";
 
@@ -13,21 +14,36 @@ const CRAWL_DISALLOW = [
 
 type Images = FileSystemFileHandle[];
 
-async function crawlDirectoryHandle(directoryHandle: FileSystemDirectoryHandle): Promise<[TreeObject, Images]> {
+const knownHandles = new Map<string, WeakRef<FileSystemFileHandle | FileSystemDirectoryHandle>>();
+
+async function crawlDirectoryHandle(
+  directoryHandle: FileSystemDirectoryHandle,
+  precedingPaths: string[] = []
+): Promise<[TreeObject, Images]> {
   const tree: TreeObject = {};
   const images: Images = [];
 
-  for await (const handle of directoryHandle.values()) {
+  for await (let handle of directoryHandle.values()) {
     if (CRAWL_DISALLOW.some((disallowed) => handle.name.match(disallowed))) {
       // console.warn(` Disallowed "${handle.name}"`);
       continue;
     }
 
+    console.log(precedingPaths);
+
+    const fullPath = [...precedingPaths, handle.name];
+    const fullPathKey = fullPath.join("/");
+
+    const previousFileHandle = knownHandles.get(fullPathKey)?.deref();
+
+    handle = previousFileHandle?.isSameEntry(handle) ? previousFileHandle : handle;
+    knownHandles.set(fullPathKey, new WeakRef(handle));
+
     if (handle.kind === "file") {
       tree[handle.name] = "";
       images.push(handle);
     } else {
-      const [childTree, childImages] = await crawlDirectoryHandle(handle);
+      const [childTree, childImages] = await crawlDirectoryHandle(handle, fullPath);
       tree[`${handle.name}/`] = childTree;
       images.push(...childImages);
     }
@@ -102,6 +118,44 @@ declare global {
   }
 }
 
+const Layout = ({ children }: { children: React.ReactNode }) => (
+  <div className="p-3 flex justify-center">
+    <div className="max-w-screen-xl flex-1">{children}</div>
+  </div>
+);
+
+const Pannel = ({ children }: { children: React.ReactNode }) => (
+  <div className="rounded-md p-2 border-slate-200 border-solid border min-h-72">{children}</div>
+);
+
+const ImageThumbnail = ({ file }: { file: FileSystemFileHandle }) => {
+  const [src, setSrc] = useState<string>();
+
+  useEffect(() => {
+    if (file) {
+      let url: string | null = null;
+
+      file.getFile().then(async (blob) => {
+        const reducedBlob = await reduce().toBlob(blob, { max: 300 });
+        url = URL.createObjectURL(reducedBlob);
+        setSrc(url);
+      });
+
+      return () => {
+        if (url) {
+          URL.revokeObjectURL(url);
+        }
+      };
+    }
+  }, [file]);
+
+  return (
+    <div className="aspect-square w-full rounded overflow-hidden pointer-events-none select-none">
+      <img src={src} alt="" className="object-cover w-full h-full" />
+    </div>
+  );
+};
+
 export default function Index() {
   useRevalidateOnWindowFocus();
 
@@ -131,21 +185,46 @@ export default function Index() {
     revalidator.revalidate();
   }
 
+  // if (data.selected) {
+  //   for (const image of data.images) {
+  //     set.add(image);
+  //   }
+  // }
+
+  // console.log(set);
+
   return (
-    <div className="font-sans p-4">
-      <div className="flex justify-between">
-        <button onClick={openDirectoryPicker}>Open drive</button>
-        <GitHubButton />
+    <Layout>
+      <div className="font-sans bg-white p-5">
+        <div className="flex justify-between">
+          <button onClick={openDirectoryPicker}>Open drive</button>
+          <GitHubButton />
+        </div>
+        {data.selected && (
+          <div>
+            <h1>{data.directoryName}</h1>
+            <pre>{data.tree}</pre>
+            <button
+              className="py-2 px-4 bg-sky-50 border-sky-500 text-sky-500 border-2 rounded"
+              onClick={organizeFiles}
+            >
+              Do magic 🪄
+            </button>
+          </div>
+        )}
       </div>
       {data.selected && (
-        <div>
-          <h1>{data.directoryName}</h1>
-          <pre>{data.tree}</pre>
-          <button className="py-2 px-4 bg-sky-50 border-sky-500 text-sky-500 border-2 rounded" onClick={organizeFiles}>
-            Do magic 🪄
-          </button>
+        <div className="grid gap-2 md:grid-cols-2">
+          <Pannel>
+            <div className="grid grid-cols-5 gap-2">
+              {data.images.map((image) => (
+                <ImageThumbnail file={image} key={image.name} />
+              ))}
+            </div>
+          </Pannel>
+          <Pannel>x</Pannel>
         </div>
       )}
-    </div>
+    </Layout>
   );
 }

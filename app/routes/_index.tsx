@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import treeify, { TreeObject } from "treeify";
 import { GitHubButton } from "~/components/GitHubButton";
 import reduce from "image-blob-reduce";
+import { getStableFileSystemHandle } from "~/lib/files";
 
 const STORAGE_KEY = "directory_handle";
 
@@ -14,8 +15,6 @@ const CRAWL_DISALLOW = [
 
 type Images = FileSystemFileHandle[];
 
-const knownHandles = new Map<string, WeakRef<FileSystemFileHandle | FileSystemDirectoryHandle>>();
-
 async function crawlDirectoryHandle(
   directoryHandle: FileSystemDirectoryHandle,
   precedingPaths: string[] = []
@@ -23,21 +22,15 @@ async function crawlDirectoryHandle(
   const tree: TreeObject = {};
   const images: Images = [];
 
-  for await (let handle of directoryHandle.values()) {
-    if (CRAWL_DISALLOW.some((disallowed) => handle.name.match(disallowed))) {
-      // console.warn(` Disallowed "${handle.name}"`);
+  for await (const unstableHandle of directoryHandle.values()) {
+    if (CRAWL_DISALLOW.some((disallowed) => unstableHandle.name.match(disallowed))) {
       continue;
     }
 
-    console.log(precedingPaths);
-
-    const fullPath = [...precedingPaths, handle.name];
+    const fullPath = [...precedingPaths, unstableHandle.name];
     const fullPathKey = fullPath.join("/");
 
-    const previousFileHandle = knownHandles.get(fullPathKey)?.deref();
-
-    handle = previousFileHandle?.isSameEntry(handle) ? previousFileHandle : handle;
-    knownHandles.set(fullPathKey, new WeakRef(handle));
+    const handle = getStableFileSystemHandle(fullPathKey, unstableHandle);
 
     if (handle.kind === "file") {
       tree[handle.name] = "";
@@ -67,12 +60,6 @@ function assertSelected<T extends SerializeFrom<typeof clientLoader>>(data: T): 
   if (!data.selected) {
     throw new Error("Expected data to be of selected variant");
   }
-}
-
-function assertFullHandle<T extends FileSystemFileHandle | FileSystemDirectoryHandle>(
-  reference: JsonifyObject<T>
-): asserts reference is T {
-  // 😉
 }
 
 function extname(file: FileSystemFileHandle) {
@@ -156,10 +143,14 @@ const ImageThumbnail = ({ file }: { file: FileSystemFileHandle }) => {
   );
 };
 
+function useClientLoaderData<T extends () => unknown>() {
+  return useLoaderData() as Awaited<ReturnType<T>>;
+}
+
 export default function Index() {
   useRevalidateOnWindowFocus();
 
-  const data = useLoaderData<typeof clientLoader>();
+  const data = useClientLoaderData<typeof clientLoader>();
   const revalidator = useRevalidator();
 
   async function openDirectoryPicker() {
@@ -170,28 +161,18 @@ export default function Index() {
 
   async function organizeFiles() {
     assertSelected(data);
-    assertFullHandle(data.handle);
 
     const DCIM = await data.handle.getDirectoryHandle("DCIM", { create: true });
     const destination = await DCIM.getDirectoryHandle("100MEDIA", { create: true });
 
     for (let index = 0; index < data.images.length; index++) {
       const image = data.images.at(index);
-      assertFullHandle(image);
-      const ext = extname(image);
-      await image.move(destination, `IMG_${String(index).padStart(4, "0")}${ext}`); // TODO: 1 pad index properly, carry over extension
+      const ext = extname(image!);
+      await image!.move(destination, `IMG_${String(index).padStart(4, "0")}${ext}`); // TODO: 1 pad index properly, carry over extension
     }
 
     revalidator.revalidate();
   }
-
-  // if (data.selected) {
-  //   for (const image of data.images) {
-  //     set.add(image);
-  //   }
-  // }
-
-  // console.log(set);
 
   return (
     <Layout>

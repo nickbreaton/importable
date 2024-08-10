@@ -6,6 +6,7 @@ import treeify, { TreeObject } from "treeify";
 import { GitHubButton } from "~/components/GitHubButton";
 import reduce from "image-blob-reduce";
 import { getStableFileSystemHandle } from "~/lib/files";
+import { useRevalidateOnWindowFocus } from "~/lib/revalidate";
 
 const STORAGE_KEY = "directory_handle";
 
@@ -87,16 +88,6 @@ export async function clientLoader() {
     tree: treeify.asTree(tree, false, true),
     images: images,
   };
-}
-
-function useRevalidateOnWindowFocus() {
-  const revalidator = useRevalidator();
-  useEffect(() => {
-    const controller = new AbortController();
-    window.addEventListener("focus", revalidator.revalidate, { signal: controller.signal });
-    document.addEventListener("mouseenter", revalidator.revalidate, { signal: controller.signal });
-    return () => controller.abort();
-  }, [revalidator]);
 }
 
 declare global {

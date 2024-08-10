@@ -3,6 +3,7 @@ import { useLoaderData, useRevalidator } from "@remix-run/react";
 import localForage from "localforage";
 import { useEffect } from "react";
 import treeify, { TreeObject } from "treeify";
+import { GitHubButton } from "~/components/GitHubButton";
 
 const STORAGE_KEY = "directory_handle";
 
@@ -132,7 +133,10 @@ export default function Index() {
 
   return (
     <div className="font-sans p-4">
-      <button onClick={openDirectoryPicker}>Open drive</button>
+      <div className="flex justify-between">
+        <button onClick={openDirectoryPicker}>Open drive</button>
+        <GitHubButton />
+      </div>
       {data.selected && (
         <div>
           <h1>{data.directoryName}</h1>

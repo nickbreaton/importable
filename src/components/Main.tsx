@@ -1,11 +1,16 @@
-import type { FileChangeInfo } from "fs/promises";
 import { startTransition, useActionState, useEffect } from "react";
+import localForage from "localforage";
 
 type FileTree = Record<string, FileSystemFileHandle>;
+
+// Ensure when accessing we are always using IndexDB.
+// This ensures we can properly store a directory handle.
+localForage.setDriver(localForage.INDEXEDDB);
 
 type Payload =
   // | { type: 'restoring' }
   | { type: "select"; directory: FileSystemDirectoryHandle }
+  | { type: "restore"; directory: FileSystemDirectoryHandle }
   | { type: "refresh" }
   | { type: "eject" }
   | { type: "ready"; files: FileTree };
@@ -58,17 +63,34 @@ export function Main() {
     Result,
     Payload
   >(async (state, payload) => {
-    if (payload.type === "select") {
-      submit({ type: "refresh" });
+    if (payload.type === "eject") {
+      return {};
+    }
+
+    if (
+      (payload.type === "select" || payload.type === "restore") &&
+      payload.directory
+    ) {
+      await localForage.setItem("selected", payload.directory);
+      startTransition(() => {
+        submit({ type: "refresh" });
+      });
       return { ...state, directory: payload.directory };
     }
 
     if (payload.type === "refresh" && state.directory) {
-      const files = await crawlDirectoryHandle(
-        state.directory,
-        state.files ?? {},
-      );
-      return { ...state, files };
+      await new Promise((res) => setTimeout(res, 1000));
+
+      try {
+        const files = await crawlDirectoryHandle(
+          state.directory,
+          state.files ?? {},
+        );
+        return { ...state, files };
+      } catch (error) {
+        console.error(error);
+        startTransition(() => submit({ type: "eject" }));
+      }
     }
 
     return state;
@@ -88,7 +110,18 @@ export function Main() {
     return () => controller.abort();
   }, []);
 
-  console.log(files);
+  useEffect(() => {
+    localForage.setDriver(localForage.INDEXEDDB).then(async () => {
+      const handle =
+        await localForage.getItem<FileSystemDirectoryHandle>("selected");
+
+      if (handle) {
+        startTransition(() => {
+          submit({ type: "restore", directory: handle });
+        });
+      }
+    });
+  }, []);
 
   return (
     <div>

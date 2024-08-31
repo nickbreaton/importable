@@ -10,10 +10,10 @@ const program = setup({
       files?: FileTree;
     },
     events: {} as
-      | { type: "showDirectoryPicker" }
-      | { type: "select"; directory: FileSystemDirectoryHandle }
-      | { type: "refresh"; files: FileTree }
-      | { type: "eject" },
+      | { type: "SHOW_DIRECTORY_PICKER" }
+      // | { type: "SELECT"; directory: FileSystemDirectoryHandle }
+      // | { type: "REFRESH"; files: FileTree }
+      | { type: "EJECT" },
   },
   actors: {
     filePicker: fromPromise(() => {
@@ -58,7 +58,7 @@ const program = setup({
     empty: {
       entry: ["reset"],
       on: {
-        showDirectoryPicker: {
+        SHOW_DIRECTORY_PICKER: {
           target: "selecting",
         },
       },
@@ -75,7 +75,7 @@ const program = setup({
     },
     selected: {
       on: {
-        eject: {
+        EJECT: {
           target: "empty",
         },
       },
@@ -132,11 +132,11 @@ export function Main() {
   return (
     <div className="flex gap-4 flex-col">
       <div className="flex gap-4">
-        <button onClick={() => send({ type: "showDirectoryPicker" })}>
+        <button onClick={() => send({ type: "SHOW_DIRECTORY_PICKER" })}>
           open
         </button>
-        {actor.can({ type: "eject" }) && (
-          <button onClick={() => send({ type: "eject" })}>reset</button>
+        {actor.can({ type: "EJECT" }) && (
+          <button onClick={() => send({ type: "EJECT" })}>reset</button>
         )}
       </div>
       <p className="block">

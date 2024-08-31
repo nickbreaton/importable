@@ -1,9 +1,7 @@
-import { startTransition, useActionState, useEffect } from "react";
+import { useEffect } from "react";
 import localForage from "localforage";
 import {
   assign,
-  createActor,
-  fromEventObservable,
   fromPromise,
   setup,
   stopChild,
@@ -11,7 +9,7 @@ import {
   type ActorRefFrom,
   type AnyActorRef,
 } from "xstate";
-import { useActor, useActorRef } from "@xstate/react";
+import { useActor } from "@xstate/react";
 
 const CRAWL_DISALLOW = [
   /^\./, // starts with dot

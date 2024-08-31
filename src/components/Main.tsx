@@ -1,18 +1,93 @@
 import { startTransition, useActionState, useEffect } from "react";
 import localForage from "localforage";
-import { assign, createActor, fromPromise, setup } from "xstate";
-import { useActor } from "@xstate/react";
+import {
+  assign,
+  createActor,
+  fromEventObservable,
+  fromPromise,
+  setup,
+  stopChild,
+  type ActorRef,
+  type ActorRefFrom,
+  type AnyActorRef,
+} from "xstate";
+import { useActor, useActorRef } from "@xstate/react";
+
+const CRAWL_DISALLOW = [
+  /^\./, // starts with dot
+];
+
+async function crawlDirectoryHandle({
+  directoryHandle,
+  previousFiles,
+  precedingPaths,
+  signal,
+}: {
+  directoryHandle: FileSystemDirectoryHandle;
+  previousFiles: FileTree;
+  precedingPaths?: string;
+  signal?: AbortSignal;
+}): Promise<FileTree> {
+  let tree: FileTree = {};
+
+  for await (let handle of directoryHandle.values()) {
+    if (signal?.aborted) {
+      console.warn("ABORTING FILE SEARCH");
+      break;
+    }
+
+    if (CRAWL_DISALLOW.some((disallowed) => handle.name.match(disallowed))) {
+      continue;
+    }
+
+    const path = [precedingPaths, handle.name].filter(Boolean).join("/");
+
+    // maintain stable reference
+    handle = (await previousFiles[path]?.isSameEntry(handle))
+      ? previousFiles[path]
+      : handle;
+
+    if (handle.kind === "file") {
+      tree = { ...tree, [path]: handle };
+    } else {
+      const partialTree = await crawlDirectoryHandle({
+        directoryHandle: handle,
+        previousFiles,
+        precedingPaths: path,
+      });
+      tree = { ...tree, ...partialTree };
+    }
+  }
+
+  return tree;
+}
+
+const treeCrawler = fromPromise<
+  void,
+  { directoryHandle: FileSystemDirectoryHandle; parent: AnyActorRef }
+>(async ({ signal, input: { directoryHandle, parent } }) => {
+  const result = await crawlDirectoryHandle({
+    signal,
+    directoryHandle,
+    previousFiles: {},
+  });
+
+  if (!signal.aborted) {
+    parent.send({ type: "REFRESH_COMPLETE", files: result });
+  }
+});
 
 const program = setup({
   types: {
     context: {} as {
       directory?: FileSystemDirectoryHandle;
       files?: FileTree;
+      treeCrawler?: ActorRefFrom<typeof treeCrawler>;
     },
     events: {} as
       | { type: "SHOW_DIRECTORY_PICKER" }
-      // | { type: "SELECT"; directory: FileSystemDirectoryHandle }
-      // | { type: "REFRESH"; files: FileTree }
+      | { type: "REFRESH" }
+      | { type: "REFRESH_COMPLETE"; files: FileTree }
       | { type: "EJECT" },
   },
   actors: {
@@ -20,13 +95,17 @@ const program = setup({
       return window.showDirectoryPicker();
     }),
     restore: fromPromise(async () => {
+      // Ensure when accessing we are always using IndexDB.
+      // This ensures we can properly store a directory handle.
       await localForage.setDriver(localForage.INDEXEDDB);
+
       const directory =
         await localForage.getItem<FileSystemDirectoryHandle>("directory");
       // TODO: see if we can make a good UX with ultra qukck loading
       await new Promise((res) => setTimeout(res, 500));
       return directory;
     }),
+    treeCrawler,
   },
   actions: {
     reset: assign({ directory: undefined }),
@@ -38,6 +117,23 @@ const program = setup({
   initial: "restoring",
   always: {
     actions: ["save"],
+  },
+  on: {
+    REFRESH: {
+      guard: ({ context }) => !!context.directory,
+      actions: [
+        stopChild((x) => x.context.treeCrawler?.id ?? "none"),
+        assign({
+          treeCrawler: ({ spawn, context, self }) =>
+            spawn("treeCrawler", {
+              input: { directoryHandle: context.directory!, parent: self },
+            }),
+        }),
+      ],
+    },
+    REFRESH_COMPLETE: {
+      actions: assign({ files: ({ event }) => event.files }),
+    },
   },
   states: {
     restoring: {
@@ -85,49 +181,21 @@ const program = setup({
 
 type FileTree = Record<string, FileSystemFileHandle>;
 
-// Ensure when accessing we are always using IndexDB.
-// This ensures we can properly store a directory handle.
-// localForage.setDriver(localForage.INDEXEDDB);
-
-// const CRAWL_DISALLOW = [
-//   /^\./, // starts with dot
-// ];
-
-// async function crawlDirectoryHandle(
-//   directoryHandle: FileSystemDirectoryHandle,
-//   previousFiles: FileTree,
-//   precedingPaths?: string,
-// ): Promise<FileTree> {
-//   let tree: FileTree = {};
-
-//   for await (let handle of directoryHandle.values()) {
-//     if (CRAWL_DISALLOW.some((disallowed) => handle.name.match(disallowed))) {
-//       continue;
-//     }
-
-//     const path = [precedingPaths, handle.name].filter(Boolean).join("/");
-
-//     // maintain stable reference
-//     handle = (await previousFiles[path]?.isSameEntry(handle))
-//       ? previousFiles[path]
-//       : handle;
-
-//     if (handle.kind === "file") {
-//       tree = { ...tree, [path]: handle };
-//     } else {
-//       const partialTree = await crawlDirectoryHandle(
-//         handle,
-//         previousFiles,
-//         path,
-//       );
-//       tree = { ...tree, ...partialTree };
-//     }
-//   }
-
-//   return tree;
-// }
 export function Main() {
   const [actor, send] = useActor(program);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const refresh = () => send({ type: "REFRESH" });
+    refresh();
+    window.addEventListener("focus", refresh, {
+      signal: controller.signal,
+    });
+    document.addEventListener("mouseenter", refresh, {
+      signal: controller.signal,
+    });
+    return () => controller.abort();
+  }, []);
 
   return (
     <div className="flex gap-4 flex-col">
@@ -142,102 +210,11 @@ export function Main() {
       <p className="block">
         {actor.value} : {actor.context.directory?.name}
       </p>
+      <ul>
+        {Object.entries(actor.context.files ?? {})?.map(([path, file]) => {
+          return <li key={path}>{path}</li>;
+        })}
+      </ul>
     </div>
   );
 }
-// export function Main() {
-//   const [{ directory, files }, submit, isPending] = useActionState<
-//     Result,
-//     Payload
-//   >(async (state, payload) => {
-//     if (payload.type === "eject") {
-//       return {};
-//     }
-
-//     if (
-//       (payload.type === "select" || payload.type === "restore") &&
-//       payload.directory
-//     ) {
-//       await localForage.setItem("selected", payload.directory);
-//       startTransition(() => {
-//         submit({ type: "refresh" });
-//       });
-//       return { ...state, directory: payload.directory };
-//     }
-
-//     if (payload.type === "refresh" && state.directory) {
-//       await new Promise((res) => setTimeout(res, 1000));
-
-//       try {
-//         const files = await crawlDirectoryHandle(
-//           state.directory,
-//           state.files ?? {},
-//         );
-//         return { ...state, files };
-//       } catch (error) {
-//         console.error(error);
-//         startTransition(() => submit({ type: "eject" }));
-//       }
-//     }
-
-//     return state;
-//   }, {});
-
-//   useEffect(() => {
-//     const controller = new AbortController();
-//     const refresh = () => {
-//       startTransition(() => submit({ type: "refresh" }));
-//     };
-//     window.addEventListener("focus", refresh, {
-//       signal: controller.signal,
-//     });
-//     document.addEventListener("mouseenter", refresh, {
-//       signal: controller.signal,
-//     });
-//     return () => controller.abort();
-//   }, []);
-
-//   useEffect(() => {
-//     localForage.setDriver(localForage.INDEXEDDB).then(async () => {
-//       const handle =
-//         await localForage.getItem<FileSystemDirectoryHandle>("selected");
-
-//       if (handle) {
-//         startTransition(() => {
-//           submit({ type: "restore", directory: handle });
-//         });
-//       }
-//     });
-//   }, []);
-
-//   return (
-//     <div>
-//       {directory ? (
-//         <div>
-//           <span>{directory.name}</span>
-//           <hr />
-//           <ul>
-//             {Object.entries(files ?? {}).map(([path, file]) => (
-//               <li key={path}>{path}</li>
-//             ))}
-//           </ul>
-//         </div>
-//       ) : (
-//         <div>
-//           <button
-//             onClick={async () => {
-//               const directory = await window.showDirectoryPicker({
-//                 mode: "readwrite",
-//               });
-//               startTransition(() => {
-//                 submit({ type: "select", directory: directory });
-//               });
-//             }}
-//           >
-//             Select a drive
-//           </button>
-//         </div>
-//       )}
-//     </div>
-//   );
-// }

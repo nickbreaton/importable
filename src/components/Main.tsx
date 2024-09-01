@@ -1,7 +1,7 @@
 import { useState, useSyncExternalStore, use } from "react";
 import localForage from "localforage";
 import { assign, fromPromise, setup, stopChild, type ActorRef, type ActorRefFrom, type AnyActorRef } from "xstate";
-import { Effect, Layer, ManagedRuntime, pipe, Ref, Stream, SubscriptionRef } from "effect";
+import { Effect, Layer, ManagedRuntime, pipe, Ref, Stream, SubscriptionRef, Data } from "effect";
 
 const CRAWL_DISALLOW = [
   /^\./, // starts with dot
@@ -64,186 +64,65 @@ const treeCrawler = fromPromise<void, { directoryHandle: FileSystemDirectoryHand
   },
 );
 
-type State =
-  | { type: "ejected" }
-  | { type: "selecting" }
-  | {
-      type: "selected";
-      directory: FileSystemDirectoryHandle;
-      files?: FileTree;
-    };
+type State = Data.TaggedEnum<{
+  Ejected: {};
+  Selecting: {};
+  Selected: { readonly directory: FileSystemDirectoryHandle };
+}>;
 
-class CrawlerActor {
-  constructor() {}
-}
+const State = Data.taggedEnum<State>();
 
-class MainActor {
-  get: Effect.Effect<State>;
-
-  showDirectoryPicker: () => Effect.Effect<void>;
-  eject: () => Effect.Effect<void>;
-
-  changes: Stream.Stream<State>;
-
-  private constructor(private state: SubscriptionRef.SubscriptionRef<State>) {
-    this.get = Ref.get(state);
-    this.changes = this.state.changes;
-
-    this.showDirectoryPicker = () =>
-      Ref.set(state, { type: "selecting" }).pipe(
-        Effect.andThen(() => {
-          return Effect.tryPromise({
-            try: () => window.showDirectoryPicker(),
-            catch: Effect.fail,
-          });
-        }),
-        Effect.tap((directory) =>
-          Effect.promise(() => {
-            return localForage.setItem("directory", directory);
-          }),
-        ),
-        Effect.andThen((directory) => Ref.set(state, { type: "selected", directory })),
-        Effect.catchAll(() => Ref.set(state, { type: "ejected" })),
-      );
-
-    this.eject = () => Ref.set(state, { type: "ejected" });
-  }
-
-  static make(initial: State) {
-    return SubscriptionRef.make(initial).pipe(Effect.map((ref) => new MainActor(ref)));
-  }
-}
-
-const program = setup({
-  types: {
-    context: {} as {
-      directory?: FileSystemDirectoryHandle;
-      files?: FileTree;
-      treeCrawler?: ActorRefFrom<typeof treeCrawler>;
-    },
-    events: {} as
-      | { type: "SHOW_DIRECTORY_PICKER" }
-      | { type: "REFRESH" }
-      | { type: "REFRESH_COMPLETE"; files: FileTree }
-      | { type: "EJECT" },
-  },
-  actors: {
-    filePicker: fromPromise(() => {
-      return window.showDirectoryPicker();
-    }),
-    restore: fromPromise(async () => {
-      // Ensure when accessing we are always using IndexDB.
-      // This ensures we can properly store a directory handle.
+const makeMainActor = () =>
+  Effect.gen(function* () {
+    const restored = yield* Effect.promise(async () => {
       await localForage.setDriver(localForage.INDEXEDDB);
-
       const directory = await localForage.getItem<FileSystemDirectoryHandle>("directory");
       // TODO: see if we can make a good UX with ultra qukck loading
       await new Promise((res) => setTimeout(res, 500));
       return directory;
-    }),
-    treeCrawler,
-  },
-  actions: {
-    reset: assign({ directory: undefined }),
-    save: async ({ context }) => {
-      await localForage.setItem("directory", context.directory);
-    },
-  },
-}).createMachine({
-  initial: "restoring",
-  always: {
-    actions: ["save"],
-  },
-  on: {
-    REFRESH: {
-      guard: ({ context }) => !!context.directory,
-      actions: [
-        stopChild((x) => x.context.treeCrawler?.id ?? "none"),
-        assign({
-          treeCrawler: ({ spawn, context, self }) =>
-            spawn("treeCrawler", {
-              input: { directoryHandle: context.directory!, parent: self },
-            }),
-        }),
-      ],
-    },
-    REFRESH_COMPLETE: {
-      actions: assign({ files: ({ event }) => event.files }),
-    },
-  },
-  states: {
-    restoring: {
-      invoke: {
-        src: "restore",
-        onDone: [
-          {
-            guard: ({ event }) => !!event.output,
-            target: "selected",
-            actions: assign({ directory: ({ event }) => event.output! }),
-          },
-          {
-            target: "empty",
-          },
-        ],
-      },
-    },
-    empty: {
-      entry: ["reset"],
-      on: {
-        SHOW_DIRECTORY_PICKER: {
-          target: "selecting",
-        },
-      },
-    },
-    selecting: {
-      invoke: {
-        src: "filePicker",
-        onDone: {
-          target: "selected",
-          actions: assign({ directory: ({ event }) => event.output }),
-        },
-        onError: { target: "empty" },
-      },
-    },
-    selected: {
-      on: {
-        EJECT: {
-          target: "empty",
-        },
-      },
-    },
-  },
-});
+    });
+
+    const ref = yield* SubscriptionRef.make<State>(
+      restored ? State.Selected({ directory: restored }) : State.Ejected(),
+    );
+
+    const eject = () =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() => localForage.removeItem("directory"));
+        yield* Ref.set(ref, State.Ejected());
+      });
+
+    const showDirectoryPicker = () =>
+      Effect.gen(function* () {
+        yield* Ref.set(ref, State.Selecting());
+
+        const handle = yield* pipe(
+          Effect.tryPromise({ try: () => window.showDirectoryPicker(), catch: Effect.fail }),
+          Effect.catchAll(eject),
+        );
+
+        if (!handle) {
+          return;
+        }
+
+        yield* Effect.promise(() => localForage.setItem("directory", handle));
+        yield* Ref.set(ref, State.Selected({ directory: handle }));
+      });
+
+    return {
+      get: Ref.get(ref),
+      changes: ref.changes,
+
+      showDirectoryPicker,
+      eject,
+    };
+  });
 
 type FileTree = Record<string, FileSystemFileHandle>;
 
-// export function useSynchronizedState<T>(ref: Effect.Effect<SubscriptionRef.SubscriptionRef<T>>) {
-//   const [subscriptionRef] = useState(Effect.runSync(ref));
-
-//   const value = useSyncExternalStore(
-//     (callback) => Stream.runForEach(subscriptionRef.changes, () => Effect.sync(callback)).pipe(Effect.runCallback),
-//     () => Effect.runSync(SubscriptionRef.get(subscriptionRef)),
-//   );
-
-//   return [value, subscriptionRef] as const;
-// }
-
 const runtime = ManagedRuntime.make(Layer.empty);
 
-const mainActorPromise = runtime.runPromise(
-  pipe(
-    Effect.promise(async () => {
-      await localForage.setDriver(localForage.INDEXEDDB);
-      const directory = await localForage.getItem<FileSystemDirectoryHandle>("directory");
-      // TODO: see if we can make a good UX with ultra qukck loading
-      await new Promise((res) => setTimeout(res, 500));
-      return directory;
-    }),
-    Effect.andThen((directory) => {
-      return MainActor.make(directory ? { type: "selected", directory } : { type: "ejected" });
-    }),
-  ),
-);
+const mainActorPromise = runtime.runPromise(makeMainActor());
 
 export function useMainActor() {
   const actor = use(mainActorPromise);
@@ -266,7 +145,7 @@ export function Main() {
         <button onClick={() => runtime.runPromise(actor.eject())}>reset</button>
       </div>
       <p className="block">
-        {state.type} : {state.type === "selected" && state.directory.name}
+        {state._tag} : {State.$is("Selected")(state) && state.directory.name}
       </p>
     </div>
   );

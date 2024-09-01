@@ -1,7 +1,7 @@
-import { useState, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore, use } from "react";
 import localForage from "localforage";
 import { assign, fromPromise, setup, stopChild, type ActorRef, type ActorRefFrom, type AnyActorRef } from "xstate";
-import { Effect, Layer, ManagedRuntime, Ref, Stream, SubscriptionRef } from "effect";
+import { Effect, Layer, ManagedRuntime, pipe, Ref, Stream, SubscriptionRef } from "effect";
 
 const CRAWL_DISALLOW = [
   /^\./, // starts with dot
@@ -97,6 +97,11 @@ class MainActor {
             catch: Effect.fail,
           });
         }),
+        Effect.tap((directory) =>
+          Effect.promise(() => {
+            return localForage.setItem("directory", directory);
+          }),
+        ),
         Effect.andThen((directory) => Ref.set(state, { type: "selected", directory })),
         Effect.catchAll(() => Ref.set(state, { type: "ejected" })),
       );
@@ -223,30 +228,46 @@ type FileTree = Record<string, FileSystemFileHandle>;
 //   return [value, subscriptionRef] as const;
 // }
 
+const runtime = ManagedRuntime.make(Layer.empty);
+
+const mainActorPromise = runtime.runPromise(
+  pipe(
+    Effect.promise(async () => {
+      await localForage.setDriver(localForage.INDEXEDDB);
+      const directory = await localForage.getItem<FileSystemDirectoryHandle>("directory");
+      // TODO: see if we can make a good UX with ultra qukck loading
+      await new Promise((res) => setTimeout(res, 500));
+      return directory;
+    }),
+    Effect.andThen((directory) => {
+      return MainActor.make(directory ? { type: "selected", directory } : { type: "ejected" });
+    }),
+  ),
+);
+
 export function useMainActor() {
-  const [runtime] = useState(() => ManagedRuntime.make(Layer.empty));
-  const [actor] = useState(() => runtime.runSync(MainActor.make({ type: "ejected" })));
+  const actor = use(mainActorPromise);
 
   const value = useSyncExternalStore(
-    (callback) => Stream.runForEach(actor.changes, () => Effect.sync(callback)).pipe(Effect.runCallback),
-    () => Effect.runSync(actor.get),
+    (callback) => Stream.runForEach(actor.changes, () => Effect.sync(callback)).pipe(runtime.runCallback),
+    () => runtime.runSync(actor.get),
   );
 
   return [value, actor] as const;
 }
 
 export function Main() {
-  // const [actor, send] = useActor(program);
-  // const [value, subscriptionRef] = useSynchronizedState(refEf);
   const [state, actor] = useMainActor();
 
   return (
     <div className="flex gap-4 flex-col">
       <div className="flex gap-4">
-        <button onClick={() => Effect.runPromise(actor.showDirectoryPicker())}>open</button>
-        <button onClick={() => Effect.runPromise(actor.eject())}>reset</button>
+        <button onClick={() => runtime.runPromise(actor.showDirectoryPicker())}>open</button>
+        <button onClick={() => runtime.runPromise(actor.eject())}>reset</button>
       </div>
-      <p className="block">{state.type}</p>
+      <p className="block">
+        {state.type} : {state.type === "selected" && state.directory.name}
+      </p>
     </div>
   );
 }

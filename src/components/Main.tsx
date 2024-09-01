@@ -1,7 +1,20 @@
-import { useState, useSyncExternalStore, use } from "react";
+import { useState, useSyncExternalStore, use, useEffect } from "react";
 import localForage from "localforage";
-import { assign, fromPromise, setup, stopChild, type ActorRef, type ActorRefFrom, type AnyActorRef } from "xstate";
-import { Effect, Layer, ManagedRuntime, pipe, Ref, Stream, SubscriptionRef, Data } from "effect";
+import {
+  Effect,
+  Layer,
+  ManagedRuntime,
+  pipe,
+  Ref,
+  Stream,
+  SubscriptionRef,
+  Data,
+  Schedule,
+  Console,
+  Fiber,
+  Sink,
+  Option,
+} from "effect";
 
 const CRAWL_DISALLOW = [
   /^\./, // starts with dot
@@ -50,24 +63,10 @@ async function crawlDirectoryHandle({
   return tree;
 }
 
-const treeCrawler = fromPromise<void, { directoryHandle: FileSystemDirectoryHandle; parent: AnyActorRef }>(
-  async ({ signal, input: { directoryHandle, parent } }) => {
-    const result = await crawlDirectoryHandle({
-      signal,
-      directoryHandle,
-      previousFiles: {},
-    });
-
-    if (!signal.aborted) {
-      parent.send({ type: "REFRESH_COMPLETE", files: result });
-    }
-  },
-);
-
 type State = Data.TaggedEnum<{
   Ejected: {};
   Selecting: {};
-  Selected: { readonly directory: FileSystemDirectoryHandle };
+  Selected: { readonly directory: FileSystemDirectoryHandle; files: FileTree };
 }>;
 
 const State = Data.taggedEnum<State>();
@@ -83,7 +82,7 @@ const makeMainActor = () =>
     });
 
     const ref = yield* SubscriptionRef.make<State>(
-      restored ? State.Selected({ directory: restored }) : State.Ejected(),
+      restored ? State.Selected({ directory: restored, files: {} }) : State.Ejected(),
     );
 
     const eject = () =>
@@ -106,13 +105,27 @@ const makeMainActor = () =>
         }
 
         yield* Effect.promise(() => localForage.setItem("directory", handle));
-        yield* Ref.set(ref, State.Selected({ directory: handle }));
+        yield* Ref.set(ref, State.Selected({ directory: handle, files: {} }));
       });
 
-    return {
-      get: Ref.get(ref),
-      changes: ref.changes,
+    const changes = ref.changes.pipe(
+      Stream.changes,
+      Stream.mapEffect((state) => {
+        if (State.$is("Selected")(state)) {
+          return pipe(
+            Effect.promise((signal) =>
+              crawlDirectoryHandle({ directoryHandle: state.directory, previousFiles: {}, signal }),
+            ),
+            Effect.map((files): State => State.Selected({ ...state, files })),
+          );
+        }
+        return Effect.succeed(state);
+      }),
+    );
 
+    return {
+      changes,
+      get: Stream.runHead(changes),
       showDirectoryPicker,
       eject,
     };
@@ -122,18 +135,37 @@ type FileTree = Record<string, FileSystemFileHandle>;
 
 const runtime = ManagedRuntime.make(Layer.empty);
 
-const mainActorPromise = runtime.runPromise(makeMainActor());
+const storePromise = runtime.runPromise(makeMainActor()).then(async (actor) => {
+  let snapshot = Option.getOrThrow(await runtime.runPromise(actor.get));
+
+  return {
+    actor,
+    subscribe(callback: () => void) {
+      return Stream.runForEach(actor.changes, (value) => {
+        snapshot = value;
+        return Effect.sync(callback);
+      }).pipe(runtime.runCallback);
+    },
+    getSnapshot() {
+      return snapshot;
+    },
+  };
+});
 
 export function useMainActor() {
-  const actor = use(mainActorPromise);
+  const { actor, subscribe, getSnapshot } = use(storePromise);
 
-  const value = useSyncExternalStore(
-    (callback) => Stream.runForEach(actor.changes, () => Effect.sync(callback)).pipe(runtime.runCallback),
-    () => runtime.runSync(actor.get),
-  );
+  const value = useSyncExternalStore(subscribe, getSnapshot);
 
   return [value, actor] as const;
 }
+
+// export function useStream<T>(stream: SubscriptionRef.SubscriptionRef<T>) {
+//   return useSyncExternalStore(
+//     (callback) => Stream.runForEach(stream, () => Effect.sync(callback)).pipe(runtime.runCallback),
+//     () => runtime.runSync(Stream.take),
+//   );
+// }
 
 export function Main() {
   const [state, actor] = useMainActor();
@@ -147,12 +179,18 @@ export function Main() {
       <p className="block">
         {state._tag} : {State.$is("Selected")(state) && state.directory.name}
       </p>
+      {State.$is("Selected")(state) && (
+        <ul>
+          {Object.entries(state.files)?.map(([path, file]) => {
+            return <li key={path}>{path}</li>;
+          })}
+        </ul>
+      )}
     </div>
   );
 }
 
-// <ul>
-//   {Object.entries(actor.context.files ?? {})?.map(([path, file]) => {
-//     return <li key={path}>{path}</li>;
-//   })}
-// </ul>
+// function Files({ files }: { files: Stream.Stream<FileTree> }) {
+//   return (
+//   );
+// }

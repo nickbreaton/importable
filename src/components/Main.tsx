@@ -110,16 +110,24 @@ const makeMainActor = () =>
 
     const changes = ref.changes.pipe(
       Stream.changes,
-      Stream.mapEffect((state) => {
+      Stream.flatMap((state) => {
         if (State.$is("Selected")(state)) {
-          return pipe(
-            Effect.promise((signal) =>
-              crawlDirectoryHandle({ directoryHandle: state.directory, previousFiles: {}, signal }),
-            ),
-            Effect.map((files): State => State.Selected({ ...state, files })),
+          return Stream.mergeAll(
+            [Stream.void, Stream.fromEventListener(document, "mouseenter"), Stream.fromEventListener(window, "focus")],
+            { concurrency: "unbounded" },
+          ).pipe(
+            Stream.mapEffect(() => {
+              return pipe(
+                Effect.promise((signal) => {
+                  console.log("recrawl");
+                  return crawlDirectoryHandle({ directoryHandle: state.directory, previousFiles: {}, signal });
+                }),
+                Effect.map((files): State => State.Selected({ ...state, files })),
+              );
+            }),
           );
         }
-        return Effect.succeed(state);
+        return Stream.make(state);
       }),
     );
 
@@ -160,6 +168,7 @@ export function useMainActor() {
   return [value, actor] as const;
 }
 
+// https://discord.com/channels/795981131316985866/1151827019684905000/1260929530797887579
 // export function useStream<T>(stream: SubscriptionRef.SubscriptionRef<T>) {
 //   return useSyncExternalStore(
 //     (callback) => Stream.runForEach(stream, () => Effect.sync(callback)).pipe(runtime.runCallback),
@@ -189,8 +198,3 @@ export function Main() {
     </div>
   );
 }
-
-// function Files({ files }: { files: Stream.Stream<FileTree> }) {
-//   return (
-//   );
-// }

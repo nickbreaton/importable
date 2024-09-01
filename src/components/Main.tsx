@@ -118,11 +118,15 @@ const makeMainActor = () =>
           ).pipe(
             Stream.mapEffect(() => {
               return pipe(
-                Effect.promise((signal) => {
-                  console.log("recrawl");
-                  return crawlDirectoryHandle({ directoryHandle: state.directory, previousFiles: {}, signal });
+                Effect.tryPromise({
+                  try: (signal) => {
+                    console.log("recrawl");
+                    return crawlDirectoryHandle({ directoryHandle: state.directory, previousFiles: {}, signal });
+                  },
+                  catch: eject,
                 }),
                 Effect.map((files): State => State.Selected({ ...state, files })),
+                Effect.catchAll(eject),
               );
             }),
           );

@@ -1,6 +1,19 @@
 import { useState, useSyncExternalStore, use, useEffect } from "react";
 import localForage from "localforage";
-import { Effect, Layer, ManagedRuntime, pipe, Ref, Stream, SubscriptionRef, Data, Console, Option, Exit } from "effect";
+import {
+  Effect,
+  Layer,
+  ManagedRuntime,
+  pipe,
+  Ref,
+  Stream,
+  SubscriptionRef,
+  Data,
+  Console,
+  Option,
+  Exit,
+  Duration,
+} from "effect";
 import { ErrorBoundary } from "react-error-boundary";
 
 const CRAWL_DISALLOW = [
@@ -62,8 +75,8 @@ const makeFilesStream = (handle: FileSystemDirectoryHandle) =>
   pipe(
     Stream.mergeAll(
       [
+        // void needed to trigger initial
         Stream.void,
-        Stream.fromEventListener(document, "click"),
         Stream.fromEventListener(document, "mouseenter"),
         Stream.fromEventListener(window, "focus"),
       ],
@@ -71,6 +84,7 @@ const makeFilesStream = (handle: FileSystemDirectoryHandle) =>
     ),
     Stream.flatMap(() => {
       return Effect.promise((signal) => {
+        console.log("begin crawl");
         // TODO: handle previous files (ideally via stream)
         return crawlDirectoryHandle({ directoryHandle: handle, previousFiles: {}, signal });
       });

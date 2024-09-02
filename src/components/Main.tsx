@@ -87,8 +87,7 @@ const makeMainActor = () =>
     });
 
     const ref = yield* SubscriptionRef.make<State>(
-      State.Ejected(),
-      // restored ? State.Selected({ directory: restored, files: Stream.make({}) }) : State.Ejected(),
+      restored ? State.Selected({ directory: restored, files: makeFilesStream(restored) }) : State.Ejected(),
     );
 
     const eject = () =>

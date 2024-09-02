@@ -1,6 +1,7 @@
 import { useState, useSyncExternalStore, use, useEffect } from "react";
 import localForage from "localforage";
 import { Effect, Layer, ManagedRuntime, pipe, Ref, Stream, SubscriptionRef, Data, Console, Option, Exit } from "effect";
+import { ErrorBoundary } from "react-error-boundary";
 
 const CRAWL_DISALLOW = [
   /^\./, // starts with dot
@@ -166,9 +167,7 @@ export function useMainActor() {
 //   );
 // }
 
-export function Main() {
-  const [state, actor] = useMainActor();
-
+function Files({ state }: { state: State }) {
   // TODO: make this use sync external store + suspense
   const [fileTree, setFileTree] = useState({});
   const [fileError, setFileError] = useState<Error | null>(null);
@@ -188,6 +187,21 @@ export function Main() {
   if (fileError) {
     throw fileError;
   }
+  return (
+    <div>
+      {State.$is("Selected")(state) && (
+        <ul>
+          {Object.entries(fileTree)?.map(([path, file]) => {
+            return <li key={path}>{path}</li>;
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+export function Main() {
+  const [state, actor] = useMainActor();
 
   return (
     <div className="flex gap-4 flex-col">
@@ -198,13 +212,9 @@ export function Main() {
       <p className="block">
         {state._tag} : {State.$is("Selected")(state) && state.directory.name}
       </p>
-      {State.$is("Selected")(state) && (
-        <ul>
-          {Object.entries(fileTree)?.map(([path, file]) => {
-            return <li key={path}>{path}</li>;
-          })}
-        </ul>
-      )}
+      <ErrorBoundary fallback={<div>something is wrong with files</div>}>
+        <Files state={state} />
+      </ErrorBoundary>
     </div>
   );
 }

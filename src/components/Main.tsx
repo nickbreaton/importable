@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore, use, useEffect } from "react";
 import localForage from "localforage";
-import { Effect, Layer, ManagedRuntime, pipe, Ref, Stream, SubscriptionRef, Data, Console, Option } from "effect";
+import { Effect, Layer, ManagedRuntime, pipe, Ref, Stream, SubscriptionRef, Data, Console, Option, Exit } from "effect";
 
 const CRAWL_DISALLOW = [
   /^\./, // starts with dot
@@ -171,14 +171,23 @@ export function Main() {
 
   // TODO: make this use sync external store + suspense
   const [fileTree, setFileTree] = useState({});
+  const [fileError, setFileError] = useState<Error | null>(null);
   useEffect(() => {
     if (State.$is("Selected")(state)) {
       return state.files.pipe(
         Stream.runForEach((result) => Effect.sync(() => setFileTree(result))),
-        runtime.runCallback,
+        (s) =>
+          runtime.runCallback(s, {
+            onExit(exit) {
+              Exit.isFailure(exit) ? setFileError(new Error("something is wrong with reading files")) : null;
+            },
+          }),
       );
     }
   }, [state]);
+  if (fileError) {
+    throw fileError;
+  }
 
   return (
     <div className="flex gap-4 flex-col">

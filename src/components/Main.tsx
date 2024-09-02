@@ -1,20 +1,6 @@
 import { useState, useSyncExternalStore, use, useEffect } from "react";
 import localForage from "localforage";
-import {
-  Effect,
-  Layer,
-  ManagedRuntime,
-  pipe,
-  Ref,
-  Stream,
-  SubscriptionRef,
-  Data,
-  Schedule,
-  Console,
-  Fiber,
-  Sink,
-  Option,
-} from "effect";
+import { Effect, Layer, ManagedRuntime, pipe, Ref, Stream, SubscriptionRef, Data, Console, Option } from "effect";
 
 const CRAWL_DISALLOW = [
   /^\./, // starts with dot
@@ -66,10 +52,29 @@ async function crawlDirectoryHandle({
 type State = Data.TaggedEnum<{
   Ejected: {};
   Selecting: {};
-  Selected: { readonly directory: FileSystemDirectoryHandle; files: FileTree };
+  Selected: { readonly directory: FileSystemDirectoryHandle; files: Stream.Stream<FileTree> };
 }>;
 
 const State = Data.taggedEnum<State>();
+
+const makeFilesStream = (handle: FileSystemDirectoryHandle) =>
+  pipe(
+    Stream.mergeAll(
+      [
+        Stream.void,
+        Stream.fromEventListener(document, "click"),
+        Stream.fromEventListener(document, "mouseenter"),
+        Stream.fromEventListener(window, "focus"),
+      ],
+      { concurrency: "unbounded" },
+    ),
+    Stream.flatMap(() => {
+      return Effect.promise((signal) => {
+        // TODO: handle previous files (ideally via stream)
+        return crawlDirectoryHandle({ directoryHandle: handle, previousFiles: {}, signal });
+      });
+    }),
+  );
 
 const makeMainActor = () =>
   Effect.gen(function* () {
@@ -82,7 +87,8 @@ const makeMainActor = () =>
     });
 
     const ref = yield* SubscriptionRef.make<State>(
-      restored ? State.Selected({ directory: restored, files: {} }) : State.Ejected(),
+      State.Ejected(),
+      // restored ? State.Selected({ directory: restored, files: Stream.make({}) }) : State.Ejected(),
     );
 
     const eject = () =>
@@ -105,35 +111,16 @@ const makeMainActor = () =>
         }
 
         yield* Effect.promise(() => localForage.setItem("directory", handle));
-        yield* Ref.set(ref, State.Selected({ directory: handle, files: {} }));
+        yield* Ref.set(
+          ref,
+          State.Selected({
+            directory: handle,
+            files: makeFilesStream(handle),
+          }),
+        );
       });
 
-    const changes = ref.changes.pipe(
-      Stream.changes,
-      Stream.flatMap((state) => {
-        if (State.$is("Selected")(state)) {
-          return Stream.mergeAll(
-            [Stream.void, Stream.fromEventListener(document, "mouseenter"), Stream.fromEventListener(window, "focus")],
-            { concurrency: "unbounded" },
-          ).pipe(
-            Stream.mapEffect(() => {
-              return pipe(
-                Effect.tryPromise({
-                  try: (signal) => {
-                    console.log("recrawl");
-                    return crawlDirectoryHandle({ directoryHandle: state.directory, previousFiles: {}, signal });
-                  },
-                  catch: eject,
-                }),
-                Effect.map((files): State => State.Selected({ ...state, files })),
-                Effect.catchAll(eject),
-              );
-            }),
-          );
-        }
-        return Stream.make(state);
-      }),
-    );
+    const changes = ref.changes;
 
     return {
       changes,
@@ -183,6 +170,17 @@ export function useMainActor() {
 export function Main() {
   const [state, actor] = useMainActor();
 
+  // TODO: make this use sync external store + suspense
+  const [fileTree, setFileTree] = useState({});
+  useEffect(() => {
+    if (State.$is("Selected")(state)) {
+      return state.files.pipe(
+        Stream.runForEach((result) => Effect.sync(() => setFileTree(result))),
+        runtime.runCallback,
+      );
+    }
+  }, [state]);
+
   return (
     <div className="flex gap-4 flex-col">
       <div className="flex gap-4">
@@ -194,7 +192,7 @@ export function Main() {
       </p>
       {State.$is("Selected")(state) && (
         <ul>
-          {Object.entries(state.files)?.map(([path, file]) => {
+          {Object.entries(fileTree)?.map(([path, file]) => {
             return <li key={path}>{path}</li>;
           })}
         </ul>

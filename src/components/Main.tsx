@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore, use, useEffect } from "react";
+import { useState, useSyncExternalStore, use, useEffect, Suspense } from "react";
 import localForage from "localforage";
 import {
   Effect,
@@ -15,6 +15,7 @@ import {
   Duration,
 } from "effect";
 import { ErrorBoundary } from "react-error-boundary";
+import memoize from "memoize";
 
 const CRAWL_DISALLOW = [
   /^\./, // starts with dot
@@ -181,36 +182,43 @@ export function useMainActor() {
 //   );
 // }
 
-function Files({ state }: { state: State }) {
-  // TODO: make this use sync external store + suspense
-  const [fileTree, setFileTree] = useState({});
-  const [fileError, setFileError] = useState<Error | null>(null);
-  useEffect(() => {
-    if (State.$is("Selected")(state)) {
-      return state.files.pipe(
-        Stream.runForEach((result) => Effect.sync(() => setFileTree(result))),
-        (s) =>
-          runtime.runCallback(s, {
-            onExit(exit) {
-              Exit.isFailure(exit) ? setFileError(new Error("something is wrong with reading files")) : null;
-            },
-          }),
-      );
-    }
-  }, [state]);
-  if (fileError) {
-    throw fileError;
-  }
+// TODO: Does the latest stream get garbaged collected? Could we use a WeakRef/WeakSet to acheive?
+const toExternalStore = memoize(async function <T>(stream: Stream.Stream<T>) {
+  let snapshot = Option.getOrThrow(await runtime.runPromise(Stream.runHead(stream)));
+  return {
+    subscribe(notify: () => void) {
+      return Stream.runForEach(stream, (value) => {
+        snapshot = value;
+        return Effect.sync(notify);
+      }).pipe(runtime.runCallback);
+    },
+    getSnapshot() {
+      return snapshot;
+    },
+  };
+});
+
+// TODO: get `runtime` from context and pass to function
+// TODO: does this handle errors after initial error? should propogate to error boundary.
+function useStream<T>(stream: Stream.Stream<T>) {
+  // This always returns the same promise given the same steam,
+  // so safe to use with `use` provided the component using it is wrapped in a Suspense
+  // where the stream was created outside of.
+  const store = use(toExternalStore(stream));
+  return useSyncExternalStore(store.subscribe, store.getSnapshot);
+}
+
+function Files({ stream }: { stream: Stream.Stream<FileTree> }) {
+  const files = useStream(stream);
+
   return (
-    <div>
-      {State.$is("Selected")(state) && (
-        <ul>
-          {Object.entries(fileTree)?.map(([path, file]) => {
-            return <li key={path}>{path}</li>;
-          })}
-        </ul>
-      )}
-    </div>
+    <ul>
+      {Object.entries(files)
+        .toSorted()
+        ?.map(([path, file]) => {
+          return <li key={path}>{path}</li>;
+        })}
+    </ul>
   );
 }
 
@@ -226,9 +234,13 @@ export function Main() {
       <p className="block">
         {state._tag} : {State.$is("Selected")(state) && state.directory.name}
       </p>
-      <ErrorBoundary fallback={<div>something is wrong with files</div>}>
-        <Files state={state} />
-      </ErrorBoundary>
+      {State.$is("Selected")(state) && (
+        <Suspense fallback={"loading..."}>
+          <ErrorBoundary fallback={<div>something is wrong with files</div>}>
+            <Files stream={state.files} />
+          </ErrorBoundary>
+        </Suspense>
+      )}
     </div>
   );
 }

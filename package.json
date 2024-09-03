@@ -20,6 +20,7 @@
     "astro": "^4.14.5",
     "effect": "^3.7.0",
     "localforage": "^1.10.0",
+    "memoize": "^10.0.0",
     "react": "19.0.0-rc-b57d2823-20240822",
     "react-dom": "19.0.0-rc-b57d2823-20240822",
     "react-error-boundary": "^4.0.13",

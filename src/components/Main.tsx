@@ -13,6 +13,7 @@ import {
   Option,
   Exit,
   Duration,
+  Schedule,
 } from "effect";
 import { ErrorBoundary } from "react-error-boundary";
 import memoize from "memoize";
@@ -72,17 +73,23 @@ type State = Data.TaggedEnum<{
 
 const State = Data.taggedEnum<State>();
 
-const makeFilesStream = (handle: FileSystemDirectoryHandle) =>
-  pipe(
-    Stream.mergeAll(
-      [
-        // void needed to trigger initial
-        Stream.void,
-        Stream.fromEventListener(document, "mouseenter"),
-        Stream.fromEventListener(window, "focus"),
-      ],
-      { concurrency: "unbounded" },
-    ),
+function isDocumentVisible() {
+  return document.visibilityState === "visible";
+}
+
+const everyFiveSeconds = Schedule.addDelay(Schedule.repeatForever, () => Duration.seconds(5));
+
+const makeFilesStream = (handle: FileSystemDirectoryHandle) => {
+  const invalidators: Stream.Stream<unknown>[] = [
+    // void needed to trigger initial
+    Stream.void,
+    Stream.fromEventListener(window, "focus"),
+    Stream.fromEventListener(document, "mouseenter"),
+    Stream.fromEventListener(document, "visibilitychange").pipe(Stream.filter(isDocumentVisible)),
+    Stream.fromSchedule(everyFiveSeconds).pipe(Stream.filter(isDocumentVisible)),
+  ];
+  return pipe(
+    Stream.mergeAll(invalidators, { concurrency: "unbounded" }),
     Stream.flatMap(() => {
       return Effect.promise((signal) => {
         console.log("begin crawl");
@@ -91,6 +98,7 @@ const makeFilesStream = (handle: FileSystemDirectoryHandle) =>
       });
     }),
   );
+};
 
 const makeMainActor = () =>
   Effect.gen(function* () {

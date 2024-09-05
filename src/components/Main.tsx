@@ -92,11 +92,10 @@ const makeFilesStream = (handle: FileSystemDirectoryHandle) => {
   return pipe(
     Stream.mergeAll(invalidators, { concurrency: "unbounded" }),
     Stream.throttle({ cost: Chunk.size, units: 1, duration: Duration.millis(500), strategy: "enforce" }),
-    Stream.flatMap(() => {
+    Stream.scanEffect({}, (previousFiles) => {
       return Effect.promise((signal) => {
         console.log("begin crawl");
-        // TODO: handle previous files (ideally via stream)
-        return crawlDirectoryHandle({ directoryHandle: handle, previousFiles: {}, signal });
+        return crawlDirectoryHandle({ directoryHandle: handle, previousFiles, signal });
       });
     }),
   );
@@ -220,7 +219,7 @@ function useStream<T>(stream: Stream.Stream<T>) {
 
 function Files({ stream }: { stream: Stream.Stream<FileTree> }) {
   const files = useStream(stream);
-
+  console.log(files);
   return (
     <ul>
       {Object.entries(files)

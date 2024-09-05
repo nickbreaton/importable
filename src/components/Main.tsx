@@ -14,6 +14,7 @@ import {
   Exit,
   Duration,
   Schedule,
+  Chunk,
 } from "effect";
 import { ErrorBoundary } from "react-error-boundary";
 import memoize from "memoize";
@@ -90,6 +91,7 @@ const makeFilesStream = (handle: FileSystemDirectoryHandle) => {
   ];
   return pipe(
     Stream.mergeAll(invalidators, { concurrency: "unbounded" }),
+    Stream.throttle({ cost: Chunk.size, units: 1, duration: Duration.millis(500), strategy: "enforce" }),
     Stream.flatMap(() => {
       return Effect.promise((signal) => {
         console.log("begin crawl");

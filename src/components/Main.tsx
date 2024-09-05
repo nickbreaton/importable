@@ -219,7 +219,7 @@ function useStream<T>(stream: Stream.Stream<T>) {
 
 function Files({ stream }: { stream: Stream.Stream<FileTree> }) {
   const files = useStream(stream);
-  console.log(files);
+
   return (
     <ul>
       {Object.entries(files)

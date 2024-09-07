@@ -18,6 +18,7 @@ import {
 } from "effect";
 import { ErrorBoundary } from "react-error-boundary";
 import memoize from "memoize";
+import * as ValueStore from "../effect/ValueStore";
 
 const CRAWL_DISALLOW = [
   /^\./, // starts with dot
@@ -103,21 +104,19 @@ const makeFilesStream = (handle: FileSystemDirectoryHandle) => {
 
 const makeMainActor = () =>
   Effect.gen(function* () {
-    const restored = yield* Effect.promise(async () => {
-      await localForage.setDriver(localForage.INDEXEDDB);
-      const directory = await localForage.getItem<FileSystemDirectoryHandle>("directory");
-      // TODO: see if we can make a good UX with ultra qukck loading
-      await new Promise((res) => setTimeout(res, 500));
-      return directory;
-    });
+    const directoryStore = yield* DirectoryStore;
 
-    const ref = yield* SubscriptionRef.make<State>(
-      restored ? State.Selected({ directory: restored, files: makeFilesStream(restored) }) : State.Ejected(),
+    const ref = yield* (yield* directoryStore.get).pipe(
+      Option.match({
+        onSome: (directory) => State.Selected({ directory, files: makeFilesStream(directory) }),
+        onNone: () => State.Ejected(),
+      }),
+      (state) => SubscriptionRef.make<State>(state),
     );
 
     const eject = () =>
       Effect.gen(function* () {
-        yield* Effect.promise(() => localForage.removeItem("directory"));
+        yield* directoryStore.unset;
         yield* Ref.set(ref, State.Ejected());
       });
 
@@ -134,7 +133,8 @@ const makeMainActor = () =>
           return;
         }
 
-        yield* Effect.promise(() => localForage.setItem("directory", handle));
+        yield* directoryStore.set(handle);
+
         yield* Ref.set(
           ref,
           State.Selected({
@@ -156,7 +156,12 @@ const makeMainActor = () =>
 
 type FileTree = Record<string, FileSystemFileHandle>;
 
-const runtime = ManagedRuntime.make(Layer.empty);
+class DirectoryStore extends ValueStore.Tag<FileSystemDirectoryHandle>("@/DirectoryStore") {}
+
+const runtime = ManagedRuntime.make(
+  //
+  Layer.effect(DirectoryStore, ValueStore.IndexedDB(DirectoryStore)),
+);
 
 const storePromise = runtime.runPromise(makeMainActor()).then(async (actor) => {
   let snapshot = Option.getOrThrow(await runtime.runPromise(actor.get));
